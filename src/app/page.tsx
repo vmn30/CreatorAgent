@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { io as socketIO, Socket } from 'socket.io-client'
 import { motion } from 'framer-motion'
 import {
   Sparkles,
@@ -24,6 +23,9 @@ import {
   Shield,
   Lightbulb,
   ArrowRight,
+  AlertCircle,
+  CheckCircle2,
+  Clock,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -71,19 +73,48 @@ const STEP_ICONS_MAP: Record<StepType, React.ReactNode> = {
   publish: <Rocket className="h-4 w-4" />,
 }
 
+// Map session status to current step label for display
+function getStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    planning: 'Planning content strategy...',
+    researching: 'Searching the web for information...',
+    outlining: 'Structuring article outline...',
+    writing: 'Writing full article draft...',
+    illustrating: 'Generating cover artwork...',
+    reviewing: 'Reviewing article quality...',
+    formatting: 'Polishing final content...',
+    publishing: 'Publishing on-chain...',
+    completed: 'Published successfully!',
+    failed: 'Workflow failed',
+  }
+  return map[status] || status
+}
+
+// Get elapsed time display
+function getElapsedTime(startTime: string): string {
+  const elapsed = Date.now() - new Date(startTime).getTime()
+  const seconds = Math.floor(elapsed / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}m ${remainingSeconds}s`
+}
+
 export default function HomePage() {
   const [topic, setTopic] = useState('')
   const [activeSession, setActiveSession] = useState<SessionData | null>(null)
   const [sessions, setSessions] = useState<SessionData[]>([])
   const [activeTab, setActiveTab] = useState('create')
   const [isRunning, setIsRunning] = useState(false)
-  const [progressMessages, setProgressMessages] = useState<Record<string, string[]>>({})
-  const [logExpanded, setLogExpanded] = useState(false)
+  const [logExpanded, setLogExpanded] = useState(true)
   const [selectedGalleryId, setSelectedGalleryId] = useState<string | null>(null)
-  const socketRef = useRef<Socket | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [elapsedTime, setElapsedTime] = useState<string>('')
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const startTimeRef = useRef<string>('')
 
   // Fetch sessions list
-  const fetchSessionsRef = useRef(async () => {
+  const fetchSessions = useCallback(async () => {
     try {
       const res = await fetch('/api/sessions')
       const data = await res.json()
@@ -91,135 +122,84 @@ export default function HomePage() {
     } catch (err) {
       console.error('Failed to fetch sessions:', err)
     }
-  })
-  const fetchSessions = useCallback(() => fetchSessionsRef.current(), [])
+  }, [])
 
   // Fetch single session
-  const fetchSessionRef = useRef(async (sessionId: string) => {
+  const fetchSession = useCallback(async (sessionId: string) => {
     try {
       const res = await fetch(`/api/sessions/${sessionId}`)
       const data = await res.json()
-      setActiveSession(data.session)
-      if (data.session.status === 'completed' || data.session.status === 'failed') {
-        setIsRunning(false)
+      if (data.session) {
+        setActiveSession(data.session)
+        if (data.session.status === 'completed' || data.session.status === 'failed') {
+          setIsRunning(false)
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current)
+            pollIntervalRef.current = null
+          }
+          // Refresh gallery when done
+          fetchSessions()
+          // Auto-switch to result tab on completion
+          if (data.session.status === 'completed') {
+            setActiveTab('result')
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to fetch session:', err)
     }
-  })
-  const fetchSession = useCallback((sessionId: string) => fetchSessionRef.current(sessionId), [])
-
-  // Connect to WebSocket (only once, no deps that change)
-  useEffect(() => {
-    let socket: Socket | null = null
-    try {
-      socket = socketIO('/?XTransformPort=3003', {
-        path: '/',
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: 10,
-        reconnectionDelay: 3000,
-        timeout: 10000,
-      })
-      socketRef.current = socket
-
-      socket.on('connect', () => {
-        console.log('WS connected')
-      })
-
-      socket.on('connect_error', (err: Error) => {
-        console.warn('WS connection error (polling will handle updates):', err.message)
-      })
-
-      socket.on('session-created', (data: { sessionId: string }) => {
-        socket!.emit('join-session', { sessionId: data.sessionId })
-      })
-
-      socket.on('step-started', (data: { sessionId: string; stepType: string }) => {
-        setProgressMessages((prev) => ({
-          ...prev,
-          [data.stepType]: [`Starting ${STEP_LABELS[data.stepType as StepType] || data.stepType}...`],
-        }))
-      })
-
-      socket.on('step-progress', (data: { sessionId: string; stepType: string; message: string }) => {
-        setProgressMessages((prev) => ({
-          ...prev,
-          [data.stepType]: [...(prev[data.stepType] || []), data.message],
-        }))
-      })
-
-      socket.on('step-completed', (data: { sessionId: string; stepType: string }) => {
-        setProgressMessages((prev) => ({
-          ...prev,
-          [data.stepType]: [...(prev[data.stepType] || []), '✓ Completed'],
-        }))
-      })
-
-      socket.on('session-completed', () => {
-        setIsRunning(false)
-      })
-
-      socket.on('step-failed', () => {
-        setIsRunning(false)
-      })
-    } catch (err) {
-      console.warn('WebSocket initialization failed (polling will handle updates):', err)
-    }
-
-    return () => {
-      if (socket) socket.disconnect()
-    }
-  }, []) // Empty deps - connect only once
+  }, [fetchSessions])
 
   // Initial load
   useEffect(() => {
     fetchSessions()
   }, [fetchSessions])
 
-  // Poll session data when running - use sessionId ref to avoid stale closures
-  const activeSessionIdRef = useRef<string | null>(null)
-
+  // Start polling when running
   useEffect(() => {
-    if (activeSession) {
-      activeSessionIdRef.current = activeSession.id
+    if (isRunning && activeSession?.id) {
+      const sessionId = activeSession.id
+      // Poll every 2 seconds
+      pollIntervalRef.current = setInterval(() => {
+        fetchSession(sessionId)
+      }, 2000)
+    } else {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
     }
-  }, [activeSession])
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+      }
+    }
+  }, [isRunning, activeSession?.id, fetchSession])
 
+  // Update elapsed time when running
   useEffect(() => {
-    if (!isRunning || !activeSession) return
-    const sessionId = activeSession.id
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/sessions/${sessionId}`)
-        const data = await res.json()
-        if (data.session) {
-          setActiveSession(data.session)
-          if (data.session.status === 'completed' || data.session.status === 'failed') {
-            setIsRunning(false)
-          }
-        }
-      } catch (err) {
-        console.error('Polling fetch failed:', err)
+    if (!isRunning) {
+      setElapsedTime('')
+      return
+    }
+    const timer = setInterval(() => {
+      if (startTimeRef.current) {
+        setElapsedTime(getElapsedTime(startTimeRef.current))
       }
-      // Also refresh gallery
-      try {
-        const res = await fetch('/api/sessions')
-        const data = await res.json()
-        setSessions(data.sessions || [])
-      } catch (err) {
-        console.error('Sessions fetch failed:', err)
-      }
-    }, 2000) // Poll every 2 seconds for faster updates
-    return () => clearInterval(interval)
-  }, [isRunning, activeSession])
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [isRunning])
 
   // Start creation
   const handleStart = async () => {
     if (!topic.trim()) return
     setIsRunning(true)
-    setProgressMessages({})
+    setError(null)
     setActiveTab('create')
+    setLogExpanded(true)
+    const now = new Date().toISOString()
+    startTimeRef.current = now
 
     try {
       const res = await fetch('/api/agent/run-full', {
@@ -228,23 +208,31 @@ export default function HomePage() {
         body: JSON.stringify({ topic: topic.trim() }),
       })
       const data = await res.json()
+
+      if (data.error) {
+        setError(data.error)
+        setIsRunning(false)
+        return
+      }
+
       if (data.sessionId) {
-        // Join the WS room
-        if (socketRef.current) {
-          socketRef.current.emit('join-session', { sessionId: data.sessionId })
-        }
-        // Set initial session
+        // Set initial session immediately
         setActiveSession({
           id: data.sessionId,
           topic: topic.trim(),
           status: 'planning',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: now,
+          updatedAt: now,
           steps: [],
         })
+        // Start polling right away - don't wait for WS
+        pollIntervalRef.current = setInterval(() => {
+          fetchSession(data.sessionId)
+        }, 2000)
       }
     } catch (err) {
       console.error('Failed to start:', err)
+      setError('Failed to start workflow. Please try again.')
       setIsRunning(false)
     }
   }
@@ -267,8 +255,14 @@ export default function HomePage() {
     setActiveSession(null)
     setTopic('')
     setIsRunning(false)
-    setProgressMessages({})
+    setError(null)
+    setElapsedTime('')
     setActiveTab('create')
+    startTimeRef.current = ''
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
   }
 
   const currentProgress = activeSession
@@ -280,6 +274,10 @@ export default function HomePage() {
           100
       )
     : 0
+
+  // Get current running step
+  const runningStep = activeSession?.steps.find(s => s.status === 'running')
+  const failedStep = activeSession?.steps.find(s => s.status === 'failed')
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
@@ -374,6 +372,17 @@ export default function HomePage() {
                       </Button>
                     </div>
 
+                    {/* Error display */}
+                    {error && (
+                      <div className="flex items-start gap-2 p-3 rounded-md bg-red-500/10 border border-red-500/30">
+                        <AlertCircle className="h-4 w-4 text-red-400 mt-0.5 shrink-0" />
+                        <div>
+                          <p className="text-sm text-red-400 font-medium">Error</p>
+                          <p className="text-xs text-red-400/70">{error}</p>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Demo topics */}
                     <div className="space-y-2">
                       <p className="text-xs text-muted-foreground">Quick demo topics:</p>
@@ -400,15 +409,15 @@ export default function HomePage() {
                   <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-sm font-semibold">{activeSession.topic}</h3>
+                        <h3 className="text-sm font-semibold truncate mr-2">{activeSession.topic}</h3>
                         <Badge
                           variant="outline"
                           className={
                             activeSession.status === 'completed'
-                              ? 'border-emerald-500/50 text-emerald-400'
+                              ? 'border-emerald-500/50 text-emerald-400 shrink-0'
                               : activeSession.status === 'failed'
-                                ? 'border-red-500/50 text-red-400'
-                                : 'border-amber-500/50 text-amber-400'
+                                ? 'border-red-500/50 text-red-400 shrink-0'
+                                : 'border-amber-500/50 text-amber-400 shrink-0'
                           }
                         >
                           {activeSession.status === 'completed'
@@ -419,8 +428,38 @@ export default function HomePage() {
                         </Badge>
                       </div>
 
+                      {/* Current step info */}
+                      {(isRunning || activeSession.status === 'completed' || activeSession.status === 'failed') && (
+                        <div className="mb-3 flex items-center gap-2 text-xs">
+                          {isRunning && runningStep && (
+                            <>
+                              <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
+                              <span className="text-amber-400">{getStatusLabel(activeSession.status)}</span>
+                              {elapsedTime && (
+                                <span className="text-muted-foreground ml-auto flex items-center gap-1">
+                                  <Clock className="h-3 w-3" />
+                                  {elapsedTime}
+                                </span>
+                              )}
+                            </>
+                          )}
+                          {activeSession.status === 'completed' && (
+                            <>
+                              <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                              <span className="text-emerald-400">All 8 steps completed!</span>
+                            </>
+                          )}
+                          {failedStep && (
+                            <>
+                              <AlertCircle className="h-3 w-3 text-red-400" />
+                              <span className="text-red-400">Failed at {STEP_LABELS[failedStep.stepType as StepType] || failedStep.stepType} step</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+
                       {/* Progress bar */}
-                      <div className="w-full h-2 bg-muted/50 rounded-full overflow-hidden mb-3">
+                      <div className="w-full h-2.5 bg-muted/50 rounded-full overflow-hidden mb-3">
                         <motion.div
                           className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full"
                           initial={{ width: 0 }}
@@ -430,7 +469,7 @@ export default function HomePage() {
                       </div>
 
                       <div className="flex items-center justify-between">
-                        <p className="text-xs text-muted-foreground">{currentProgress}% complete</p>
+                        <p className="text-xs text-muted-foreground">{currentProgress}% complete ({activeSession.steps.filter(s => s.status === 'completed').length}/{STEP_ORDER.length} steps)</p>
                         <div className="flex gap-1">
                           {STEP_ORDER.map((stepType) => {
                             const step = activeSession.steps.find((s) => s.stepType === stepType)
@@ -574,6 +613,11 @@ export default function HomePage() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Brain className="h-5 w-5 text-emerald-400" />
                     Agent Workflow
+                    {isRunning && (
+                      <Badge variant="outline" className="border-amber-500/50 text-amber-400 text-[10px] ml-2 animate-pulse">
+                        LIVE
+                      </Badge>
+                    )}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-0 h-[calc(100%-60px)]">
@@ -581,7 +625,6 @@ export default function HomePage() {
                     <AgentWorkflow
                       steps={activeSession.steps}
                       currentStatus={activeSession.status}
-                      progressMessages={progressMessages}
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-center px-8">
@@ -674,6 +717,18 @@ export default function HomePage() {
                         <span className="text-muted-foreground">Images Generated</span>
                         <span className="font-medium">
                           {activeSession.coverImage ? 1 : 0}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Total Duration</span>
+                        <span className="font-medium">
+                          {(() => {
+                            const completed = activeSession.steps.filter(s => s.startedAt && s.completedAt)
+                            if (completed.length === 0) return 'N/A'
+                            const first = new Date(completed[0].startedAt!).getTime()
+                            const last = new Date(completed[completed.length - 1].completedAt!).getTime()
+                            return `${Math.round((last - first) / 1000)}s`
+                          })()}
                         </span>
                       </div>
                     </CardContent>

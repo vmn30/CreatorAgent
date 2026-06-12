@@ -44,10 +44,10 @@ export interface StepInfo {
 interface AgentWorkflowProps {
   steps: StepInfo[]
   currentStatus: string
-  progressMessages: Record<string, string[]>
+  progressMessages?: Record<string, string[]>
 }
 
-export function AgentWorkflow({ steps, currentStatus, progressMessages }: AgentWorkflowProps) {
+export function AgentWorkflow({ steps, currentStatus, progressMessages = {} }: AgentWorkflowProps) {
   const stepMap = new Map(steps.map((s) => [s.stepType, s]))
 
   return (

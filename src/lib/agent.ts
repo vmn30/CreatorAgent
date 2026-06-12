@@ -2,37 +2,6 @@ import ZAI from 'z-ai-web-dev-sdk'
 import { db } from './db'
 import { type StepType, type SessionStatus, STEP_ORDER, STATUS_AFTER_STEP } from './agent-types'
 
-// WebSocket notification helper - uses socket.io-client to connect to WS server
-import { io as socketIOClient } from 'socket.io-client'
-
-let wsClient: ReturnType<typeof socketIOClient> | null = null
-
-function getWSClient() {
-  if (!wsClient) {
-    wsClient = socketIOClient('http://localhost:3003', {
-      path: '/',
-      transports: ['websocket'],
-    })
-    wsClient.on('connect', () => {
-      console.log('Agent WS client connected')
-    })
-    wsClient.on('disconnect', () => {
-      console.log('Agent WS client disconnected')
-    })
-  }
-  return wsClient
-}
-
-async function notifyWS(sessionId: string, event: string, data: unknown) {
-  try {
-    const client = getWSClient()
-    client.emit('server-emit', { sessionId, event, payload: data })
-  } catch {
-    // WebSocket notification is best-effort
-    console.log(`WS notify: ${event} for session ${sessionId}`)
-  }
-}
-
 // Generate random hex string
 function randomHex(length: number): string {
   const chars = '0123456789abcdef'
@@ -43,27 +12,55 @@ function randomHex(length: number): string {
   return result
 }
 
-// Strip markdown code blocks from LLM output
+// Strip markdown code blocks from LLM output - more robust version
 function stripCodeBlocks(text: string): string {
-  // Remove ```json ... ``` or ``` ... ``` wrappers
+  if (!text || typeof text !== 'string') return text || ''
   let result = text.trim()
-  // Match code block at the start and end of the string
-  const codeBlockMatch = result.match(/^```(?:json|javascript|js|typescript)?\s*\n([\s\S]*?)\n?```\s*$/)
-  if (codeBlockMatch) {
-    return codeBlockMatch[1].trim()
+
+  // Pattern 1: Entire response wrapped in a single code block
+  const singleBlockMatch = result.match(/^```(?:json|javascript|js|typescript|text|markdown|md)?\s*\n?([\s\S]*?)\n?\s*```\s*$/)
+  if (singleBlockMatch) {
+    return singleBlockMatch[1].trim()
   }
-  // Fallback: remove individual code fence markers
-  result = result.replace(/^```(?:json|javascript|js|typescript)?\s*\n?/gm, '')
-  result = result.replace(/\n?```\s*$/gm, '')
+
+  // Pattern 2: Remove opening code fences (possibly at start of string or after newlines)
+  result = result.replace(/```(?:json|javascript|js|typescript|text|markdown|md)?\s*\n?/g, '')
+  // Remove closing code fences
+  result = result.replace(/\n?\s*```/g, '')
+
   return result.trim()
 }
 
-// Try to parse JSON from LLM output, handling code blocks
+// Try to parse JSON from LLM output, handling code blocks and various edge cases
 function tryParseJSON(text: string): unknown {
+  if (!text || typeof text !== 'string') return null
+
   const stripped = stripCodeBlocks(text)
+
   try {
     return JSON.parse(stripped)
   } catch {
+    // Try to find the first valid JSON object in the text
+    const jsonMatch = stripped.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0])
+      } catch {
+        // Still failed, return null
+      }
+    }
+
+    // Try to find JSON array
+    const arrayMatch = stripped.match(/\[[\s\S]*\]/)
+    if (arrayMatch) {
+      try {
+        return JSON.parse(arrayMatch[0])
+      } catch {
+        // Still failed
+      }
+    }
+
+    console.warn('Failed to parse JSON from LLM output, first 200 chars:', stripped.substring(0, 200))
     return null
   }
 }
@@ -113,7 +110,7 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
     data: { status: stepType === 'plan' ? 'planning' : `${stepType}ing` as SessionStatus },
   })
 
-  await notifyWS(sessionId, 'step-started', { sessionId, stepType, stepId })
+  console.log(`[Agent] Step ${stepType} started for session ${sessionId}`)
 
   try {
     const zai = await ZAI.create()
@@ -122,23 +119,28 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
 
     switch (stepType) {
       case 'plan': {
+        console.log(`[Agent] Step plan: calling GLM-5.1 for topic "${session.topic}"`)
         const completion = await zai.chat.completions.create({
           messages: [
             {
               role: 'system',
-              content: 'You are a content planning agent. Given a topic, break it down into a detailed research and writing plan. Output ONLY a valid JSON object (no markdown code blocks) with: researchQueries (array of 3-5 search queries), outlineStructure (array of section titles), targetAudience, keyThemes. Be specific and thorough.',
+              content: 'You are a content planning agent. Given a topic, break it down into a detailed research and writing plan. Output ONLY a valid JSON object (no markdown code blocks, no backticks) with: researchQueries (array of 3-5 search queries), outlineStructure (array of section titles), targetAudience, keyThemes. Be specific and thorough. IMPORTANT: Return raw JSON only, do NOT wrap in code blocks.',
             },
             { role: 'user', content: session.topic },
           ],
         })
-        output = completion.choices[0]?.message?.content || '{}'
+        const rawOutput = completion.choices[0]?.message?.content || '{}'
+        // Parse and re-serialize to ensure clean JSON in DB
+        const parsedPlan = tryParseJSON(rawOutput)
+        output = parsedPlan ? JSON.stringify(parsedPlan) : rawOutput
         toolCalls = [{ tool: 'glm-5.1-chat', purpose: 'Generate content plan' }]
 
-        // Parse and store plan
+        // Store cleaned plan
         await db.creationSession.update({
           where: { id: sessionId },
           data: { plan: typeof output === 'string' ? output : JSON.stringify(output) },
         })
+        console.log(`[Agent] Step plan: completed, plan stored`)
         break
       }
 
@@ -146,6 +148,8 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         const planData = session.plan ? (tryParseJSON(session.plan) as Record<string, unknown>) || {} : {}
         const queries = (planData.researchQueries as string[]) || [session.topic]
         const researchResults: Array<{ query: string; results: unknown }> = []
+
+        console.log(`[Agent] Step research: running ${Math.min(queries.length, 3)} searches`)
 
         for (const query of queries.slice(0, 3)) {
           try {
@@ -155,20 +159,16 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
             })
             researchResults.push({ query, results: searchResult })
             toolCalls.push({ tool: 'web_search', query, resultCount: Array.isArray(searchResult) ? searchResult.length : 0 })
-
-            await notifyWS(sessionId, 'step-progress', {
-              sessionId,
-              stepType,
-              message: `Researched: "${query}"`,
-            })
+            console.log(`[Agent] Step research: completed search for "${query}"`)
           } catch (err) {
-            console.error(`Search failed for query "${query}":`, err)
+            console.error(`[Agent] Search failed for query "${query}":`, err)
             researchResults.push({ query, results: { error: 'Search failed' } })
             toolCalls.push({ tool: 'web_search', query, error: 'Search failed' })
           }
         }
 
         // Summarize research
+        console.log(`[Agent] Step research: synthesizing findings`)
         const researchSummary = await zai.chat.completions.create({
           messages: [
             {
@@ -183,6 +183,7 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         })
         output = researchSummary.choices[0]?.message?.content || ''
         toolCalls.push({ tool: 'glm-5.1-chat', purpose: 'Synthesize research findings' })
+        console.log(`[Agent] Step research: completed`)
         break
       }
 
@@ -193,11 +194,12 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
           ? latestSteps[latestSteps.length - 1].output
           : ''
 
+        console.log(`[Agent] Step outline: generating outline`)
         const completion = await zai.chat.completions.create({
           messages: [
             {
               role: 'system',
-              content: 'You are an article outlining agent. Create a detailed, structured article outline. Output ONLY valid JSON (no markdown code blocks) with: title (string), sections (array of objects with: sectionTitle, keyPoints (array of strings), estimatedWordCount). Each section should have 3-5 key points. Target 6-8 sections for a comprehensive article.',
+              content: 'You are an article outlining agent. Create a detailed, structured article outline. Output ONLY raw JSON (no markdown code blocks, no backticks) with: title (string), sections (array of objects with: sectionTitle, keyPoints (array of strings), estimatedWordCount). Each section should have 3-5 key points. Target 6-8 sections for a comprehensive article. IMPORTANT: Return raw JSON only, do NOT wrap in code blocks.',
             },
             {
               role: 'user',
@@ -205,13 +207,16 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
             },
           ],
         })
-        output = completion.choices[0]?.message?.content || '{}'
+        const rawOutput = completion.choices[0]?.message?.content || '{}'
+        const parsedOutline = tryParseJSON(rawOutput)
+        output = parsedOutline ? JSON.stringify(parsedOutline) : rawOutput
         toolCalls = [{ tool: 'glm-5.1-chat', purpose: 'Generate article outline' }]
 
         await db.creationSession.update({
           where: { id: sessionId },
           data: { outline: typeof output === 'string' ? output : JSON.stringify(output) },
         })
+        console.log(`[Agent] Step outline: completed, outline stored`)
         break
       }
 
@@ -222,6 +227,7 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
           ? researchSteps[researchSteps.length - 1].output
           : ''
 
+        console.log(`[Agent] Step write: writing full article`)
         const completion = await zai.chat.completions.create({
           messages: [
             {
@@ -236,17 +242,12 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         })
         output = completion.choices[0]?.message?.content || ''
         toolCalls = [{ tool: 'glm-5.1-chat', purpose: 'Write full article content' }]
-
-        await notifyWS(sessionId, 'step-progress', {
-          sessionId,
-          stepType,
-          message: 'Article draft completed',
-        })
+        console.log(`[Agent] Step write: completed, article length: ${typeof output === 'string' ? output.length : 0}`)
         break
       }
 
       case 'illustrate': {
-        // Generate cover image
+        console.log(`[Agent] Step illustrate: generating cover image`)
         try {
           const coverResponse = await zai.images.generations.create({
             prompt: `A stunning, professional cover image for a research article about: ${session.topic}. Modern, clean design with abstract elements. High quality, editorial style.`,
@@ -260,15 +261,10 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
             data: { coverImage: coverBase64 },
           })
 
-          await notifyWS(sessionId, 'step-progress', {
-            sessionId,
-            stepType,
-            message: 'Cover image generated',
-          })
-
           output = { coverImageGenerated: true, imageCount: 1 }
+          console.log(`[Agent] Step illustrate: cover image generated`)
         } catch (err) {
-          console.error('Image generation failed:', err)
+          console.error('[Agent] Image generation failed:', err)
           toolCalls.push({ tool: 'image-generation', purpose: 'Generate cover image', error: 'Failed' })
           output = { coverImageGenerated: false, error: 'Image generation failed' }
         }
@@ -279,13 +275,14 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         const writeSteps = session.steps.filter((s) => s.stepType === 'write')
         const articleContent = writeSteps.length > 0 && writeSteps[writeSteps.length - 1].output
           ? writeSteps[writeSteps.length - 1].output
-          : ''
+          : session.content || ''
 
+        console.log(`[Agent] Step review: reviewing article`)
         const reviewCompletion = await zai.chat.completions.create({
           messages: [
             {
               role: 'system',
-              content: 'You are an article review agent. Review the given article for: 1) Quality and depth of content, 2) Logical flow and structure, 3) Factual consistency, 4) Writing quality and readability, 5) Completeness of coverage. Provide specific feedback and a quality score (1-10). If the score is below 7, suggest specific improvements. Output ONLY valid JSON (no markdown code blocks) with: score, feedback (array of strings), improvements (array of strings), approved (boolean).',
+              content: 'You are an article review agent. Review the given article for: 1) Quality and depth of content, 2) Logical flow and structure, 3) Factual consistency, 4) Writing quality and readability, 5) Completeness of coverage. Provide specific feedback and a quality score (1-10). If the score is below 7, suggest specific improvements. Output ONLY raw JSON (no markdown code blocks, no backticks) with: score, feedback (array of strings), improvements (array of strings), approved (boolean). IMPORTANT: Return raw JSON only, do NOT wrap in code blocks.',
             },
             {
               role: 'user',
@@ -298,6 +295,7 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         toolCalls = [{ tool: 'glm-5.1-chat', purpose: 'Review article quality' }]
 
         output = reviewResult
+        console.log(`[Agent] Step review: completed`)
         break
       }
 
@@ -305,8 +303,9 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         const writeSteps = session.steps.filter((s) => s.stepType === 'write')
         let articleContent = writeSteps.length > 0 && writeSteps[writeSteps.length - 1].output
           ? writeSteps[writeSteps.length - 1].output
-          : ''
+          : session.content || ''
 
+        console.log(`[Agent] Step format: formatting article`)
         const formatCompletion = await zai.chat.completions.create({
           messages: [
             {
@@ -328,10 +327,12 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
           where: { id: sessionId },
           data: { content: formattedContent },
         })
+        console.log(`[Agent] Step format: completed`)
         break
       }
 
       case 'publish': {
+        console.log(`[Agent] Step publish: simulating on-chain publication`)
         const contractAddr = '0x' + randomHex(40)
         const txHash = '0x' + randomHex(64)
         const nftTokenId = String(Math.floor(Math.random() * 1000000) + 1)
@@ -348,6 +349,7 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
 
         output = { contractAddr, txHash, nftTokenId }
         toolCalls = [{ tool: 'on-chain-publish', purpose: 'Simulate on-chain publication', contractAddr, txHash }]
+        console.log(`[Agent] Step publish: completed! Contract: ${contractAddr}`)
         break
       }
     }
@@ -369,22 +371,9 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
       })
     }
 
-    await notifyWS(sessionId, 'step-completed', {
-      sessionId,
-      stepType,
-      stepId,
-      outputSummary: typeof output === 'string' ? output.substring(0, 200) + '...' : JSON.stringify(output).substring(0, 200) + '...',
-    })
-
-    if (stepType === 'publish') {
-      await notifyWS(sessionId, 'session-completed', {
-        sessionId,
-        contractAddr: (output as { contractAddr: string })?.contractAddr,
-        txHash: (output as { txHash: string })?.txHash,
-      })
-    }
+    console.log(`[Agent] Step ${stepType} completed for session ${sessionId}`)
   } catch (error) {
-    console.error(`Step ${stepType} failed for session ${sessionId}:`, error)
+    console.error(`[Agent] Step ${stepType} FAILED for session ${sessionId}:`, error)
 
     await updateStep(stepId, {
       status: 'failed',
@@ -397,31 +386,26 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
       data: { status: 'failed' },
     })
 
-    await notifyWS(sessionId, 'step-failed', {
-      sessionId,
-      stepType,
-      stepId,
-      error: String(error),
-    })
-
     throw error
   }
 }
 
 // Run the full agent workflow
 export async function runFullWorkflow(sessionId: string): Promise<void> {
-  await notifyWS(sessionId, 'session-created', { sessionId })
+  console.log(`[Agent] Starting full workflow for session ${sessionId}`)
 
   for (const stepType of STEP_ORDER) {
     try {
       await executeStep(sessionId, stepType)
-      // Small delay between steps for visual effect
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      // Small delay between steps
+      await new Promise((resolve) => setTimeout(resolve, 300))
     } catch (error) {
-      console.error(`Workflow stopped at step ${stepType}:`, error)
+      console.error(`[Agent] Workflow STOPPED at step ${stepType} for session ${sessionId}:`, error)
       break
     }
   }
+
+  console.log(`[Agent] Full workflow finished for session ${sessionId}`)
 }
 
 // Get the next step type based on current session status
