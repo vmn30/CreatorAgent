@@ -76,3 +76,5 @@ mini-services/*/node_modules
 
 # Agent browser recordings
 *.webm
+worklog.md
+agent-ctx/
