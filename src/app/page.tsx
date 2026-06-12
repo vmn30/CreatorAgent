@@ -109,80 +109,110 @@ export default function HomePage() {
   })
   const fetchSession = useCallback((sessionId: string) => fetchSessionRef.current(sessionId), [])
 
-  // Connect to WebSocket
+  // Connect to WebSocket (only once, no deps that change)
   useEffect(() => {
-    const socket = socketIO('/?XTransformPort=3003', {
-      path: '/',
-      transports: ['websocket', 'polling'],
-    })
-    socketRef.current = socket
+    let socket: Socket | null = null
+    try {
+      socket = socketIO('/?XTransformPort=3003', {
+        path: '/',
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 3000,
+        timeout: 10000,
+      })
+      socketRef.current = socket
 
-    socket.on('connect', () => {
-      console.log('WS connected')
-    })
+      socket.on('connect', () => {
+        console.log('WS connected')
+      })
 
-    socket.on('session-created', (data: { sessionId: string }) => {
-      socket.emit('join-session', { sessionId: data.sessionId })
-    })
+      socket.on('connect_error', (err: Error) => {
+        console.warn('WS connection error (polling will handle updates):', err.message)
+      })
 
-    socket.on('step-started', (data: { sessionId: string; stepType: string }) => {
-      setProgressMessages((prev) => ({
-        ...prev,
-        [data.stepType]: [`Starting ${STEP_LABELS[data.stepType as StepType] || data.stepType}...`],
-      }))
-    })
+      socket.on('session-created', (data: { sessionId: string }) => {
+        socket!.emit('join-session', { sessionId: data.sessionId })
+      })
 
-    socket.on('step-progress', (data: { sessionId: string; stepType: string; message: string }) => {
-      setProgressMessages((prev) => ({
-        ...prev,
-        [data.stepType]: [...(prev[data.stepType] || []), data.message],
-      }))
-    })
+      socket.on('step-started', (data: { sessionId: string; stepType: string }) => {
+        setProgressMessages((prev) => ({
+          ...prev,
+          [data.stepType]: [`Starting ${STEP_LABELS[data.stepType as StepType] || data.stepType}...`],
+        }))
+      })
 
-    socket.on('step-completed', (data: { sessionId: string; stepType: string }) => {
-      setProgressMessages((prev) => ({
-        ...prev,
-        [data.stepType]: [...(prev[data.stepType] || []), '✓ Completed'],
-      }))
-      // Refresh session data
-      if (activeSession && data.sessionId === activeSession.id) {
-        fetchSession(data.sessionId)
-      }
-    })
+      socket.on('step-progress', (data: { sessionId: string; stepType: string; message: string }) => {
+        setProgressMessages((prev) => ({
+          ...prev,
+          [data.stepType]: [...(prev[data.stepType] || []), data.message],
+        }))
+      })
 
-    socket.on('session-completed', (data: { sessionId: string }) => {
-      setIsRunning(false)
-      if (activeSession && data.sessionId === activeSession.id) {
-        fetchSession(data.sessionId)
-      }
-    })
+      socket.on('step-completed', (data: { sessionId: string; stepType: string }) => {
+        setProgressMessages((prev) => ({
+          ...prev,
+          [data.stepType]: [...(prev[data.stepType] || []), '✓ Completed'],
+        }))
+      })
 
-    socket.on('step-failed', (data: { sessionId: string }) => {
-      setIsRunning(false)
-      if (activeSession && data.sessionId === activeSession.id) {
-        fetchSession(data.sessionId)
-      }
-    })
+      socket.on('session-completed', () => {
+        setIsRunning(false)
+      })
+
+      socket.on('step-failed', () => {
+        setIsRunning(false)
+      })
+    } catch (err) {
+      console.warn('WebSocket initialization failed (polling will handle updates):', err)
+    }
 
     return () => {
-      socket.disconnect()
+      if (socket) socket.disconnect()
     }
-  }, [activeSession, fetchSession])
+  }, []) // Empty deps - connect only once
 
   // Initial load
   useEffect(() => {
     fetchSessions()
   }, [fetchSessions])
 
-  // Poll session data when running
+  // Poll session data when running - use sessionId ref to avoid stale closures
+  const activeSessionIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (activeSession) {
+      activeSessionIdRef.current = activeSession.id
+    }
+  }, [activeSession])
+
   useEffect(() => {
     if (!isRunning || !activeSession) return
-    const interval = setInterval(() => {
-      fetchSession(activeSession.id)
-      fetchSessions()
-    }, 3000)
+    const sessionId = activeSession.id
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}`)
+        const data = await res.json()
+        if (data.session) {
+          setActiveSession(data.session)
+          if (data.session.status === 'completed' || data.session.status === 'failed') {
+            setIsRunning(false)
+          }
+        }
+      } catch (err) {
+        console.error('Polling fetch failed:', err)
+      }
+      // Also refresh gallery
+      try {
+        const res = await fetch('/api/sessions')
+        const data = await res.json()
+        setSessions(data.sessions || [])
+      } catch (err) {
+        console.error('Sessions fetch failed:', err)
+      }
+    }, 2000) // Poll every 2 seconds for faster updates
     return () => clearInterval(interval)
-  }, [isRunning, activeSession, fetchSession, fetchSessions])
+  }, [isRunning, activeSession])
 
   // Start creation
   const handleStart = async () => {
