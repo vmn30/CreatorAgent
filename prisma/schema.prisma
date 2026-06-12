@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./../db/custom.db"
+}
+
+model CreationSession {
+  id           String      @id @default(cuid())
+  topic        String
+  status       String      @default("planning") // planning, researching, outlining, writing, illustrating, reviewing, formatting, publishing, completed, failed
+  plan         String?     // JSON string of task breakdown
+  outline      String?     // JSON string of article outline
+  content      String?     // Final article content (markdown)
+  coverImage   String?     // Base64 or URL of cover image
+  contractAddr String?     // Simulated on-chain contract address
+  txHash       String?     // Simulated transaction hash
+  nftTokenId   String?     // Simulated NFT token ID
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  steps        AgentStep[]
+}
+
+model AgentStep {
+  id          String          @id @default(cuid())
+  sessionId   String
+  stepType    String          // plan, research, outline, write, illustrate, review, format, publish
+  status      String          @default("pending") // pending, running, completed, failed
+  input       String?         // JSON string of step input
+  output      String?         // JSON string of step output
+  toolCalls   String?         // JSON string of tool calls made
+  iteration   Int             @default(1)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+  session     CreationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}

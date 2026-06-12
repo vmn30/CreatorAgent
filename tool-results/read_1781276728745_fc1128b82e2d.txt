@@ -1,0 +1,687 @@
+     1→'use client'
+     2→
+     3→import { useState, useEffect, useCallback, useRef } from 'react'
+     4→import { io as socketIO, Socket } from 'socket.io-client'
+     5→import { motion, AnimatePresence } from 'framer-motion'
+     6→import {
+     7→  Sparkles,
+     8→  Brain,
+     9→  Search,
+    10→  ListTree,
+    11→  PenTool,
+    12→  Image as ImageIcon,
+    13→  Eye,
+    14→  FileText,
+    15→  Rocket,
+    16→  Loader2,
+    17→  Play,
+    18→  RotateCcw,
+    19→  BookOpen,
+    20→  LayoutGrid,
+    21→  ChevronDown,
+    22→  ChevronUp,
+    23→  Zap,
+    24→  Shield,
+    25→  Lightbulb,
+    26→  ArrowRight,
+    27→} from 'lucide-react'
+    28→import { Button } from '@/components/ui/button'
+    29→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+    30→import { Badge } from '@/components/ui/badge'
+    31→import { Input } from '@/components/ui/input'
+    32→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    33→import { Separator } from '@/components/ui/separator'
+    34→import { ScrollArea } from '@/components/ui/scroll-area'
+    35→import { AgentWorkflow, type StepInfo } from '@/components/agent-workflow'
+    36→import { ContentViewerr } from '@/components/content-viewer'
+    37→import { OnChainProof } from '@/components/on-chain-proof'
+    38→import { CreationGallery } from '@/components/creation-gallery'
+    39→import { STEP_ORDER, STEP_LABELS, type StepType } from '@/lib/agent'
+    40→
+    41→interface SessionData {
+    42→  id: string
+    43→  topic: string
+    44→  status: string
+    45→  plan?: string | null
+    46→  outline?: string | null
+    47→  content?: string | null
+    48→  coverImage?: string | null
+    49→  contractAddr?: string | null
+    50→  txHash?: string | null
+    51→  nftTokenId?: string | null
+    52→  createdAt: string
+    53→  updatedAt: string
+    54→  steps: StepInfo[]
+    55→}
+    56→
+    57→const DEMO_TOPICS = [
+    58→  'The Future of AI Agents in Web3: Autonomous DeFi Strategies',
+    59→  'How GLM-5.1 Enables Long-Horizon Creative Tasks',
+    60→  'The Rise of AI-NFTs: When Artificial Intelligence Meets Digital Ownership',
+    61→]
+    62→
+    63→const STEP_ICONS_MAP: Record<StepType, React.ReactNode> = {
+    64→  plan: <Brain className="h-4 w-4" />,
+    65→  research: <Search className="h-4 w-4" />,
+    66→  outline: <ListTree className="h-4 w-4" />,
+    67→  write: <PenTool className="h-4 w-4" />,
+    68→  illustrate: <ImageIcon className="h-4 w-4" />,
+    69→  review: <Eye className="h-4 w-4" />,
+    70→  format: <FileText className="h-4 w-4" />,
+    71→  publish: <Rocket className="h-4 w-4" />,
+    72→}
+    73→
+    74→export default function HomePage() {
+    75→  const [topic, setTopic] = useState('')
+    76→  const [activeSession, setActiveSession] = useState<SessionData | null>(null)
+    77→  const [sessions, setSessions] = useState<SessionData[]>([])
+    78→  const [activeTab, setActiveTab] = useState('create')
+    79→  const [isRunning, setIsRunning] = useState(false)
+    80→  const [progressMessages, setProgressMessages] = useState<Record<string, string[]>>({})
+    81→  const [logExpanded, setLogExpanded] = useState(false)
+    82→  const [selectedGalleryId, setSelectedGalleryId] = useState<string | null>(null)
+    83→  const socketRef = useRef<Socket | null>(null)
+    84→
+    85→  // Connect to WebSocket
+    86→  useEffect(() => {
+    87→    const socket = socketIO('/?XTransformPort=3003', {
+    88→      path: '/',
+    89→      transports: ['websocket', 'polling'],
+    90→    })
+    91→    socketRef.current = socket
+    92→
+    93→    socket.on('connect', () => {
+    94→      console.log('WS connected')
+    95→    })
+    96→
+    97→    socket.on('session-created', (data: { sessionId: string }) => {
+    98→      socket.emit('join-session', { sessionId: data.sessionId })
+    99→    })
+   100→
+   101→    socket.on('step-started', (data: { sessionId: string; stepType: string }) => {
+   102→      setProgressMessages((prev) => ({
+   103→        ...prev,
+   104→        [data.stepType]: [`Starting ${STEP_LABELS[data.stepType as StepType] || data.stepType}...`],
+   105→      }))
+   106→    })
+   107→
+   108→    socket.on('step-progress', (data: { sessionId: string; stepType: string; message: string }) => {
+   109→      setProgressMessages((prev) => ({
+   110→        ...prev,
+   111→        [data.stepType]: [...(prev[data.stepType] || []), data.message],
+   112→      }))
+   113→    })
+   114→
+   115→    socket.on('step-completed', (data: { sessionId: string; stepType: string }) => {
+   116→      setProgressMessages((prev) => ({
+   117→        ...prev,
+   118→        [data.stepType]: [...(prev[data.stepType] || []), '✓ Completed'],
+   119→      }))
+   120→      // Refresh session data
+   121→      if (activeSession && data.sessionId === activeSession.id) {
+   122→        fetchSession(data.sessionId)
+   123→      }
+   124→    })
+   125→
+   126→    socket.on('session-completed', (data: { sessionId: string }) => {
+   127→      setIsRunning(false)
+   128→      if (activeSession && data.sessionId === activeSession.id) {
+   129→        fetchSession(data.sessionId)
+   130→      }
+   131→    })
+   132→
+   133→    socket.on('step-failed', (data: { sessionId: string }) => {
+   134→      setIsRunning(false)
+   135→      if (activeSession && data.sessionId === activeSession.id) {
+   136→        fetchSession(data.sessionId)
+   137→      }
+   138→    })
+   139→
+   140→    return () => {
+   141→      socket.disconnect()
+   142→    }
+   143→  }, [activeSession])
+   144→
+   145→  // Fetch sessions list
+   146→  const fetchSessions = useCallback(async () => {
+   147→    try {
+   148→      const res = await fetch('/api/sessions')
+   149→      const data = await res.json()
+   150→      setSessions(data.sessions || [])
+   151→    } catch (err) {
+   152→      console.error('Failed to fetch sessions:', err)
+   153→    }
+   154→  }, [])
+   155→
+   156→  // Fetch single session
+   157→  const fetchSession = useCallback(async (sessionId: string) => {
+   158→    try {
+   159→      const res = await fetch(`/api/sessions/${sessionId}`)
+   160→      const data = await res.json()
+   161→      setActiveSession(data.session)
+   162→      if (data.session.status === 'completed' || data.session.status === 'failed') {
+   163→        setIsRunning(false)
+   164→      }
+   165→    } catch (err) {
+   166→      console.error('Failed to fetch session:', err)
+   167→    }
+   168→  }, [])
+   169→
+   170→  // Initial load
+   171→  useEffect(() => {
+   172→    fetchSessions()
+   173→  }, [fetchSessions])
+   174→
+   175→  // Poll session data when running
+   176→  useEffect(() => {
+   177→    if (!isRunning || !activeSession) return
+   178→    const interval = setInterval(() => {
+   179→      fetchSession(activeSession.id)
+   180→      fetchSessions()
+   181→    }, 3000)
+   182→    return () => clearInterval(interval)
+   183→  }, [isRunning, activeSession, fetchSession, fetchSessions])
+   184→
+   185→  // Start creation
+   186→  const handleStart = async () => {
+   187→    if (!topic.trim()) return
+   188→    setIsRunning(true)
+   189→    setProgressMessages({})
+   190→    setActiveTab('create')
+   191→
+   192→    try {
+   193→      const res = await fetch('/api/agent/run-full', {
+   194→        method: 'POST',
+   195→        headers: { 'Content-Type': 'application/json' },
+   196→        body: JSON.stringify({ topic: topic.trim() }),
+   197→      })
+   198→      const data = await res.json()
+   199→      if (data.sessionId) {
+   200→        // Join the WS room
+   201→        if (socketRef.current) {
+   202→          socketRef.current.emit('join-session', { sessionId: data.sessionId })
+   203→        }
+   204→        // Set initial session
+   205→        setActiveSession({
+   206→          id: data.sessionId,
+   207→          topic: topic.trim(),
+   208→          status: 'planning',
+   209→          createdAt: new Date().toISOString(),
+   210→          updatedAt: new Date().toISOString(),
+   211→          steps: [],
+   212→        })
+   213→      }
+   214→    } catch (err) {
+   215→      console.error('Failed to start:', err)
+   216→      setIsRunning(false)
+   217→    }
+   218→  }
+   219→
+   220→  // View result from gallery
+   221→  const handleGallerySelect = async (sessionId: string) => {
+   222→    setSelectedGalleryId(sessionId)
+   223→    try {
+   224→      const res = await fetch(`/api/sessions/${sessionId}`)
+   225→      const data = await res.json()
+   226→      setActiveSession(data.session)
+   227→      setActiveTab(data.session.status === 'completed' ? 'result' : 'create')
+   228→    } catch (err) {
+   229→      console.error('Failed to fetch session:', err)
+   230→    }
+   231→  }
+   232→
+   233→  // Reset
+   234→  const handleReset = () => {
+   235→    setActiveSession(null)
+   236→    setTopic('')
+   237→    setIsRunning(false)
+   238→    setProgressMessages({})
+   239→    setActiveTab('create')
+   240→  }
+   241→
+   242→  const currentProgress = activeSession
+   243→    ? Math.round(
+   244→        (STEP_ORDER.filter((st) =>
+   245→          activeSession.steps.some((s) => s.stepType === st && s.status === 'completed')
+   246→        ).length /
+   247→          STEP_ORDER.length) *
+   248→          100
+   249→      )
+   250→    : 0
+   251→
+   252→  return (
+   253→    <div className="min-h-screen flex flex-col bg-background text-foreground">
+   254→      {/* Header */}
+   255→      <header className="border-b border-border/50 bg-card/30 backdrop-blur-xl sticky top-0 z-50">
+   256→        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+   257→          <div className="flex items-center justify-between">
+   258→            <div className="flex items-center gap-3">
+   259→              <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+   260→                <Sparkles className="h-5 w-5 text-white" />
+   261→              </div>
+   262→              <div>
+   263→                <h1 className="text-xl font-bold tracking-tight">
+   264→                  Creator<span className="text-emerald-400">Agent</span>
+   265→                </h1>
+   266→                <p className="text-[10px] text-muted-foreground tracking-wider uppercase">
+   267→                  AI × Creator Economy | Z.AI Hackathon
+   268→                </p>
+   269→              </div>
+   270→            </div>
+   271→            <div className="hidden md:flex items-center gap-2">
+   272→              <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[10px]">
+   273→                <Zap className="h-3 w-3 mr-1" />
+   274→                GLM-5.1 Powered
+   275→              </Badge>
+   276→              <Badge variant="outline" className="border-border/50 text-muted-foreground text-[10px]">
+   277→                <Shield className="h-3 w-3 mr-1" />
+   278→                Web3 Ready
+   279→              </Badge>
+   280→            </div>
+   281→          </div>
+   282→        </div>
+   283→      </header>
+   284→
+   285→      {/* Main Content */}
+   286→      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
+   287→        <Tabs value={activeTab} onValueChange={setActiveTab}>
+   288→          <TabsList className="grid w-full grid-cols-3 max-w-md mx-auto mb-6 bg-card/50 border border-border/50">
+   289→            <TabsTrigger value="create" className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-400">
+   290→              <Sparkles className="h-4 w-4 mr-2" />
+   291→              Create
+   292→            </TabsTrigger>
+   293→            <TabsTrigger value="result" className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-400" disabled={!activeSession}>
+   294→              <BookOpen className="h-4 w-4 mr-2" />
+   295→              Result
+   296→            </TabsTrigger>
+   297→            <TabsTrigger value="gallery" className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-400">
+   298→              <LayoutGrid className="h-4 w-4 mr-2" />
+   299→              Gallery
+   300→            </TabsTrigger>
+   301→          </TabsList>
+   302→
+   303→          {/* CREATE TAB */}
+   304→          <TabsContent value="create">
+   305→            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+   306→              {/* Left: Input + Controls */}
+   307→              <div className="space-y-6">
+   308→                {/* Topic Input */}
+   309→                <Card className="border-border/50 bg-card/50 backdrop-blur-sm overflow-hidden">
+   310→                  <CardHeader className="pb-3">
+   311→                    <CardTitle className="flex items-center gap-2 text-base">
+   312→                      <Lightbulb className="h-5 w-5 text-amber-400" />
+   313→                      What would you like to create?
+   314→                    </CardTitle>
+   315→                  </CardHeader>
+   316→                  <CardContent className="space-y-4">
+   317→                    <div className="flex gap-2">
+   318→                      <Input
+   319→                        placeholder="Enter a topic for your AI research article..."
+   320→                        value={topic}
+   321→                        onChange={(e) => setTopic(e.target.value)}
+   322→                        onKeyDown={(e) => e.key === 'Enter' && !isRunning && handleStart()}
+   323→                        disabled={isRunning}
+   324→                        className="bg-muted/50 border-border/50 focus:border-emerald-500/50 focus:ring-emerald-500/20"
+   325→                      />
+   326→                      <Button
+   327→                        onClick={handleStart}
+   328→                        disabled={isRunning || !topic.trim()}
+   329→                        className="bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 px-6"
+   330→                      >
+   331→                        {isRunning ? (
+   332→                          <>
+   333→                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+   334→                            Running
+   335→                          </>
+   336→                        ) : (
+   337→                          <>
+   338→                            <Play className="h-4 w-4 mr-2" />
+   339→                            Start
+   340→                          </>
+   341→                        )}
+   342→                      </Button>
+   343→                    </div>
+   344→
+   345→                    {/* Demo topics */}
+   346→                    <div className="space-y-2">
+   347→                      <p className="text-xs text-muted-foreground">Quick demo topics:</p>
+   348→                      <div className="flex flex-wrap gap-2">
+   349→                        {DEMO_TOPICS.map((demo) => (
+   350→                          <Button
+   351→                            key={demo}
+   352→                            variant="outline"
+   353→                            size="sm"
+   354→                            className="text-[11px] h-7 border-border/50 hover:border-emerald-500/50 hover:text-emerald-400"
+   355→                            onClick={() => setTopic(demo)}
+   356→                            disabled={isRunning}
+   357→                          >
+   358→                            {demo.substring(0, 40)}...
+   359→                          </Button>
+   360→                        ))}
+   361→                      </div>
+   362→                    </div>
+   363→                  </CardContent>
+   364→                </Card>
+   365→
+   366→                {/* Progress Overview */}
+   367→                {activeSession && (
+   368→                  <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+   369→                    <CardContent className="p-4">
+   370→                      <div className="flex items-center justify-between mb-3">
+   371→                        <h3 className="text-sm font-semibold">{activeSession.topic}</h3>
+   372→                        <Badge
+   373→                          variant="outline"
+   374→                          className={
+   375→                            activeSession.status === 'completed'
+   376→                              ? 'border-emerald-500/50 text-emerald-400'
+   377→                              : activeSession.status === 'failed'
+   378→                                ? 'border-red-500/50 text-red-400'
+   379→                                : 'border-amber-500/50 text-amber-400'
+   380→                          }
+   381→                        >
+   382→                          {activeSession.status === 'completed'
+   383→                            ? 'Completed'
+   384→                            : activeSession.status === 'failed'
+   385→                              ? 'Failed'
+   386→                              : 'In Progress'}
+   387→                        </Badge>
+   388→                      </div>
+   389→
+   390→                      {/* Progress bar */}
+   391→                      <div className="w-full h-2 bg-muted/50 rounded-full overflow-hidden mb-3">
+   392→                        <motion.div
+   393→                          className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full"
+   394→                          initial={{ width: 0 }}
+   395→                          animate={{ width: `${currentProgress}%` }}
+   396→                          transition={{ duration: 0.5 }}
+   397→                        />
+   398→                      </div>
+   399→
+   400→                      <div className="flex items-center justify-between">
+   401→                        <p className="text-xs text-muted-foreground">{currentProgress}% complete</p>
+   402→                        <div className="flex gap-1">
+   403→                          {STEP_ORDER.map((stepType) => {
+   404→                            const step = activeSession.steps.find((s) => s.stepType === stepType)
+   405→                            const isDone = step?.status === 'completed'
+   406→                            const isRunning2 = step?.status === 'running'
+   407→                            const isFailed2 = step?.status === 'failed'
+   408→                            return (
+   409→                              <div
+   410→                                key={stepType}
+   411→                                className={`h-2 w-2 rounded-full ${
+   412→                                  isDone
+   413→                                    ? 'bg-emerald-400'
+   414→                                    : isRunning2
+   415→                                      ? 'bg-amber-400 animate-pulse'
+   416→                                      : isFailed2
+   417→                                        ? 'bg-red-400'
+   418→                                        : 'bg-muted/50'
+   419→                                }`}
+   420→                                title={STEP_LABELS[stepType]}
+   421→                              />
+   422→                            )
+   423→                          })}
+   424→                        </div>
+   425→                      </div>
+   426→
+   427→                      {/* View Result button */}
+   428→                      {activeSession.status === 'completed' && (
+   429→                        <Button
+   430→                          onClick={() => setActiveTab('result')}
+   431→                          className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white"
+   432→                        >
+   433→                          View Result
+   434→                          <ArrowRight className="h-4 w-4 ml-2" />
+   435→                        </Button>
+   436→                      )}
+   437→
+   438→                      {/* Reset button */}
+   439→                      {(activeSession.status === 'completed' || activeSession.status === 'failed') && (
+   440→                        <Button
+   441→                          variant="outline"
+   442→                          onClick={handleReset}
+   443→                          className="w-full mt-2 border-border/50"
+   444→                        >
+   445→                          <RotateCcw className="h-4 w-4 mr-2" />
+   446→                          Create Another
+   447→                        </Button>
+   448→                      )}
+   449→                    </CardContent>
+   450→                  </Card>
+   451→                )}
+   452→
+   453→                {/* Agent Execution Log */}
+   454→                {activeSession && activeSession.steps.length > 0 && (
+   455→                  <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+   456→                    <CardHeader
+   457→                      className="py-3 cursor-pointer"
+   458→                      onClick={() => setLogExpanded(!logExpanded)}
+   459→                    >
+   460→                      <div className="flex items-center justify-between">
+   461→                        <CardTitle className="text-sm">Agent Execution Log</CardTitle>
+   462→                        {logExpanded ? (
+   463→                          <ChevronUp className="h-4 w-4 text-muted-foreground" />
+   464→                        ) : (
+   465→                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+   466→                        )}
+   467→                      </div>
+   468→                    </CardHeader>
+   469→                    {logExpanded && (
+   470→                      <CardContent className="pt-0">
+   471→                        <ScrollArea className="max-h-64">
+   472→                          <div className="space-y-2">
+   473→                            {activeSession.steps.map((step) => (
+   474→                              <div
+   475→                                key={step.id}
+   476→                                className="flex items-start gap-2 text-xs p-2 rounded-md bg-muted/30"
+   477→                              >
+   478→                                <div className="mt-0.5">{STEP_ICONS_MAP[step.stepType as StepType]}</div>
+   479→                                <div className="flex-1 min-w-0">
+   480→                                  <div className="flex items-center gap-2">
+   481→                                    <span className="font-medium">{STEP_LABELS[step.stepType as StepType] || step.stepType}</span>
+   482→                                    <Badge
+   483→                                      variant="outline"
+   484→                                      className={`text-[9px] px-1 py-0 ${
+   485→                                        step.status === 'completed'
+   486→                                          ? 'border-emerald-500/50 text-emerald-400'
+   487→                                          : step.status === 'running'
+   488→                                            ? 'border-amber-500/50 text-amber-400'
+   489→                                            : step.status === 'failed'
+   490→                                              ? 'border-red-500/50 text-red-400'
+   491→                                              : 'border-border text-muted-foreground'
+   492→                                      }`}
+   493→                                    >
+   494→                                      {step.status}
+   495→                                    </Badge>
+   496→                                    {step.iteration > 1 && (
+   497→                                      <Badge variant="outline" className="text-[9px] px-1 py-0">
+   498→                                        iter #{step.iteration}
+   499→                                      </Badge>
+   500→                                    )}
+   501→                                  </div>
+   502→                                  {step.toolCalls && (
+   503→                                    <div className="mt-1 flex flex-wrap gap-1">
+   504→                                      {(() => {
+   505→                                        try {
+   506→                                          const calls = JSON.parse(step.toolCalls)
+   507→                                          return (Array.isArray(calls) ? calls : []).map(
+   508→                                            (call: { tool?: string; purpose?: string; error?: string }, i: number) => (
+   509→                                              <span
+   510→                                                key={i}
+   511→                                                className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400"
+   512→                                              >
+   513→                                                {call.tool}{call.error ? ' (failed)' : `: ${call.purpose}`}
+   514→                                              </span>
+   515→                                            )
+   516→                                          )
+   517→                                        } catch {
+   518→                                          return null
+   519→                                        }
+   520→                                      })()}
+   521→                                    </div>
+   522→                                  )}
+   523→                                  {step.startedAt && step.completedAt && (
+   524→                                    <p className="text-[9px] text-muted-foreground/50 mt-0.5">
+   525→                                      Duration: {Math.round((new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime()) / 1000)}s
+   526→                                    </p>
+   527→                                  )}
+   528→                                </div>
+   529→                              </div>
+   530→                            ))}
+   531→                          </div>
+   532→                        </ScrollArea>
+   533→                      </CardContent>
+   534→                    )}
+   535→                  </Card>
+   536→                )}
+   537→              </div>
+   538→
+   539→              {/* Right: Workflow Visualization */}
+   540→              <Card className="border-border/50 bg-card/50 backdrop-blur-sm h-[calc(100vh-220px)] min-h-[500px]">
+   541→                <CardHeader className="pb-3">
+   542→                  <CardTitle className="flex items-center gap-2 text-base">
+   543→                    <Brain className="h-5 w-5 text-emerald-400" />
+   544→                    Agent Workflow
+   545→                  </CardTitle>
+   546→                </CardHeader>
+   547→                <CardContent className="p-0 h-[calc(100%-60px)]">
+   548→                  {activeSession ? (
+   549→                    <AgentWorkflow
+   550→                      steps={activeSession.steps}
+   551→                      currentStatus={activeSession.status}
+   552→                      progressMessages={progressMessages}
+   553→                    />
+   554→                  ) : (
+   555→                    <div className="flex flex-col items-center justify-center h-full text-center px-8">
+   556→                      <div className="h-16 w-16 rounded-full bg-emerald-500/10 flex items-center justify-center mb-4">
+   557→                        <Sparkles className="h-8 w-8 text-emerald-400/50" />
+   558→                      </div>
+   559→                      <h3 className="text-base font-semibold text-muted-foreground">Ready to Create</h3>
+   560→                      <p className="text-sm text-muted-foreground/50 mt-2 max-w-xs">
+   561→                        Enter a topic and click Start to watch the AI agent autonomously plan, research, write, and publish a research article.
+   562→                      </p>
+   563→                      <div className="mt-4 grid grid-cols-4 gap-2">
+   564→                        {STEP_ORDER.map((stepType) => (
+   565→                          <div
+   566→                            key={stepType}
+   567→                            className="flex flex-col items-center gap-1 p-2 rounded-lg bg-muted/30"
+   568→                          >
+   569→                            <div className="text-muted-foreground/50">{STEP_ICONS_MAP[stepType]}</div>
+   570→                            <span className="text-[9px] text-muted-foreground/50">{STEP_LABELS[stepType]}</span>
+   571→                          </div>
+   572→                        ))}
+   573→                      </div>
+   574→                    </div>
+   575→                  )}
+   576→                </CardContent>
+   577→              </Card>
+   578→            </div>
+   579→          </TabsContent>
+   580→
+   581→          {/* RESULT TAB */}
+   582→          <TabsContent value="result">
+   583→            {activeSession ? (
+   584→              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+   585→                <div className="lg:col-span-2">
+   586→                  <ContentViewerr
+   587→                    content={activeSession.content || ''}
+   588→                    topic={activeSession.topic}
+   589→                    coverImage={activeSession.coverImage}
+   590→                    createdAt={activeSession.createdAt}
+   591→                    status={activeSession.status}
+   592→                  />
+   593→                </div>
+   594→                <div className="space-y-4">
+   595→                  <OnChainProof
+   596→                    contractAddr={activeSession.contractAddr}
+   597→                    txHash={activeSession.txHash}
+   598→                    nftTokenId={activeSession.nftTokenId}
+   599→                    createdAt={activeSession.updatedAt}
+   600→                  />
+   601→
+   602→                  {/* Quick stats */}
+   603→                  <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+   604→                    <CardHeader className="pb-3">
+   605→                      <CardTitle className="text-sm">Session Stats</CardTitle>
+   606→                    </CardHeader>
+   607→                    <CardContent className="space-y-3">
+   608→                      <div className="flex justify-between text-xs">
+   609→                        <span className="text-muted-foreground">Total Steps</span>
+   610→                        <span className="font-medium">{activeSession.steps.length}</span>
+   611→                      </div>
+   612→                      <div className="flex justify-between text-xs">
+   613→                        <span className="text-muted-foreground">Completed</span>
+   614→                        <span className="font-medium text-emerald-400">
+   615→                          {activeSession.steps.filter((s) => s.status === 'completed').length}
+   616→                        </span>
+   617→                      </div>
+   618→                      <Separator className="bg-border/30" />
+   619→                      <div className="flex justify-between text-xs">
+   620→                        <span className="text-muted-foreground">LLM Calls</span>
+   621→                        <span className="font-medium">
+   622→                          {activeSession.steps.filter((s) => {
+   623→                            try {
+   624→                              const calls = JSON.parse(s.toolCalls || '[]')
+   625→                              return Array.isArray(calls) && calls.some((c: { tool?: string }) => c.tool?.includes('glm'))
+   626→                            } catch { return false }
+   627→                          }).length}
+   628→                        </span>
+   629→                      </div>
+   630→                      <div className="flex justify-between text-xs">
+   631→                        <span className="text-muted-foreground">Web Searches</span>
+   632→                        <span className="font-medium">
+   633→                          {activeSession.steps.reduce((acc, s) => {
+   634→                            try {
+   635→                              const calls = JSON.parse(s.toolCalls || '[]')
+   636→                              return acc + (Array.isArray(calls) ? calls.filter((c: { tool?: string }) => c.tool?.includes('web_search')).length : 0)
+   637→                            } catch { return acc }
+   638→                          }, 0)}
+   639→                        </span>
+   640→                      </div>
+   641→                      <div className="flex justify-between text-xs">
+   642→                        <span className="text-muted-foreground">Images Generated</span>
+   643→                        <span className="font-medium">
+   644→                          {activeSession.coverImage ? 1 : 0}
+   645→                        </span>
+   646→                      </div>
+   647→                    </CardContent>
+   648→                  </Card>
+   649→                </div>
+   650→              </div>
+   651→            ) : (
+   652→              <div className="flex flex-col items-center justify-center py-20 text-center">
+   653→                <BookOpen className="h-12 w-12 text-muted-foreground/30 mb-4" />
+   654→                <h3 className="text-lg font-semibold text-muted-foreground">No result to display</h3>
+   655→                <p className="text-sm text-muted-foreground/50 mt-1">Create something first to see the result here</p>
+   656→              </div>
+   657→            )}
+   658→          </TabsContent>
+   659→
+   660→          {/* GALLERY TAB */}
+   661→          <TabsContent value="gallery">
+   662→            <CreationGallery
+   663→              sessions={sessions}
+   664→              onSelect={handleGallerySelect}
+   665→              selectedId={selectedGalleryId || undefined}
+   666→            />
+   667→          </TabsContent>
+   668→        </Tabs>
+   669→      </main>
+   670→
+   671→      {/* Footer */}
+   672→      <footer className="border-t border-border/50 bg-card/30 backdrop-blur-xl mt-auto">
+   673→        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+   674→          <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
+   675→            <p className="text-xs text-muted-foreground">
+   676→              Built with <span className="text-emerald-400 font-medium">GLM-5.1</span> | Z.AI Hackathon 2026
+   677→            </p>
+   678→            <p className="text-xs text-muted-foreground/50">
+   679→              One Agent. Full Creative Pipeline. From Topic to On-chain Publication.
+   680→            </p>
+   681→          </div>
+   682→        </div>
+   683→      </footer>
+   684→    </div>
+   685→  )
+   686→}
+   687→
