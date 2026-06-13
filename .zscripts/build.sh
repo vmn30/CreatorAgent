@@ -18,10 +18,9 @@ BUILD_DIR="/tmp/build_fullstack_dir"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-# Copy source files - let platform handle install + build
+# Copy source files INCLUDING .next build output for faster cold start
 rsync -a \
   --exclude='node_modules' \
-  --exclude='.next' \
   --exclude='.git' \
   --exclude='skills' \
   --exclude='download' \
@@ -37,6 +36,8 @@ rsync -a \
   --exclude='Caddyfile' \
   --exclude='Dockerfile' \
   --exclude='.dockerignore' \
+  --exclude='start-keepalive.sh' \
+  --exclude='start-robust.sh' \
   ./ "$BUILD_DIR/"
 
 # Ensure correct .env
