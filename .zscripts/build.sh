@@ -13,12 +13,14 @@ npm install --silent 2>/dev/null
 npx prisma generate 2>/dev/null
 npm run build 2>&1 | tail -3
 
-# Create minimal source artifact
+# Clean up dev cache to reduce artifact size
+rm -rf .next/dev .next/cache
+
+# Create minimal source artifact - include .next build output
 BUILD_DIR="/tmp/build_fullstack_dir"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-# Copy source files INCLUDING .next build output for faster cold start
 rsync -a \
   --exclude='node_modules' \
   --exclude='.git' \
@@ -38,6 +40,8 @@ rsync -a \
   --exclude='.dockerignore' \
   --exclude='start-keepalive.sh' \
   --exclude='start-robust.sh' \
+  --exclude='.next/dev' \
+  --exclude='.next/cache' \
   ./ "$BUILD_DIR/"
 
 # Ensure correct .env
