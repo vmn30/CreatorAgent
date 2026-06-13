@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { db, ensureDbInitialized } from '@/lib/db'
-import { runFullWorkflow } from '@/lib/agent'
+import { executeStep } from '@/lib/agent'
+import { STEP_ORDER, STATUS_AFTER_STEP, type StepType, type SessionStatus } from '@/lib/agent-types'
 
 export async function POST(request: Request) {
   try {
@@ -18,15 +19,11 @@ export async function POST(request: Request) {
       },
     })
 
-    // Run the full workflow in the background
-    runFullWorkflow(session.id).catch((error) => {
-      console.error(`Full workflow failed for session ${session.id}:`, error)
-    })
-
     // Return immediately with the session ID
+    // Frontend will poll /api/agent/execute to run steps one at a time
     return NextResponse.json({ sessionId: session.id })
   } catch (error) {
-    console.error('Failed to start full workflow:', error)
-    return NextResponse.json({ error: 'Failed to start full workflow' }, { status: 500 })
+    console.error('Failed to create session:', error)
+    return NextResponse.json({ error: 'Failed to create session' }, { status: 500 })
   }
 }

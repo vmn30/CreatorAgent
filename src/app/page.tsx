@@ -155,27 +155,59 @@ export default function HomePage() {
     fetchSessions()
   }, [fetchSessions])
 
-  // Start polling when running
-  useEffect(() => {
-    if (isRunning && activeSession?.id) {
-      const sessionId = activeSession.id
-      // Poll every 2 seconds
-      pollIntervalRef.current = setInterval(() => {
-        fetchSession(sessionId)
-      }, 2000)
-    } else {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
+  // Auto-execute next step when running
+  // This replaces the old background workflow - each step runs in its own API call
+  const isExecutingRef = useRef(false)
+
+  const executeNextStep = useCallback(async (sessionId: string) => {
+    if (isExecutingRef.current) return // Prevent concurrent execution
+    isExecutingRef.current = true
+    try {
+      const res = await fetch('/api/agent/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      })
+      const data = await res.json()
+      if (data.error) {
+        console.error('Step execution error:', data.error)
+        // Don't stop - might be temporary
       }
+      // Refresh session data after step completes
+      await fetchSession(sessionId)
+    } catch (err) {
+      console.error('Failed to execute step:', err)
+    } finally {
+      isExecutingRef.current = false
     }
+  }, [fetchSession])
+
+  // Poll session status and auto-execute next step
+  useEffect(() => {
+    if (!isRunning || !activeSession?.id) return
+    const sessionId = activeSession.id
+
+    // Check if we need to execute the next step
+    const status = activeSession.status
+    const hasRunningStep = activeSession.steps.some(s => s.status === 'running')
+
+    if (status !== 'completed' && status !== 'failed' && !hasRunningStep) {
+      // No step is running and session is not done - execute next step
+      executeNextStep(sessionId)
+    }
+
+    // Also poll for status updates
+    pollIntervalRef.current = setInterval(() => {
+      fetchSession(sessionId)
+    }, 3000)
+
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current)
         pollIntervalRef.current = null
       }
     }
-  }, [isRunning, activeSession?.id, fetchSession])
+  }, [isRunning, activeSession?.id, activeSession?.status, activeSession?.steps, fetchSession, executeNextStep])
 
   // Update elapsed time when running
   useEffect(() => {
@@ -225,10 +257,8 @@ export default function HomePage() {
           updatedAt: now,
           steps: [],
         })
-        // Start polling right away - don't wait for WS
-        pollIntervalRef.current = setInterval(() => {
-          fetchSession(data.sessionId)
-        }, 2000)
+        // Execute first step immediately
+        executeNextStep(data.sessionId)
       }
     } catch (err) {
       console.error('Failed to start:', err)
