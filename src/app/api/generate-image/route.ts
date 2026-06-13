@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server'
 import ZAI from 'z-ai-web-dev-sdk'
 
+// Lazy-initialized ZAI client
+let _zaiClient: InstanceType<typeof ZAI> | null = null
+
+async function getZaiClient(): Promise<InstanceType<typeof ZAI>> {
+  if (_zaiClient) return _zaiClient
+  _zaiClient = await ZAI.create()
+  return _zaiClient
+}
+
 export async function POST(request: Request) {
   try {
     const { prompt } = await request.json()
@@ -9,7 +18,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
     }
 
-    const zai = await ZAI.create()
+    const zai = await getZaiClient()
     const response = await zai.images.generations.create({
       prompt: prompt.trim(),
       size: '1024x1024',

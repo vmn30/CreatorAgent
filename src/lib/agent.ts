@@ -2,6 +2,26 @@ import ZAI from 'z-ai-web-dev-sdk'
 import { db } from './db'
 import { type StepType, type SessionStatus, STEP_ORDER, STATUS_AFTER_STEP } from './agent-types'
 
+// Lazy-initialized ZAI client with fallback
+let _zaiClient: InstanceType<typeof ZAI> | null = null
+let _zaiInitError: string | null = null
+
+async function getZaiClient(): Promise<InstanceType<typeof ZAI>> {
+  if (_zaiClient) return _zaiClient
+  if (_zaiInitError) throw new Error(_zaiInitError)
+
+  try {
+    _zaiClient = await ZAI.create()
+    console.log('[Agent] ZAI SDK initialized successfully')
+    return _zaiClient
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    console.error('[Agent] ZAI SDK initialization failed:', errMsg)
+    _zaiInitError = `AI SDK initialization failed: ${errMsg}. Please check .z-ai-config or environment variables.`
+    throw new Error(_zaiInitError)
+  }
+}
+
 // Generate random hex string
 function randomHex(length: number): string {
   const chars = '0123456789abcdef'
@@ -113,7 +133,7 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
   console.log(`[Agent] Step ${stepType} started for session ${sessionId}`)
 
   try {
-    const zai = await ZAI.create()
+    const zai = await getZaiClient()
     let output: unknown
     let toolCalls: unknown[] = []
 
