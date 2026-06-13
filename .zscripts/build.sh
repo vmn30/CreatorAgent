@@ -6,21 +6,14 @@ cd /home/z/my-project
 BUILD_ID="${BUILD_ID:-$(date +%s)}"
 OUTPUT_PATH="/tmp/build_fullstack_${BUILD_ID}.tar.gz"
 
-# Ensure we have a fresh build
-npm install --silent 2>/dev/null || true
-npx prisma generate 2>/dev/null || true
-npm run build 2>&1 | tail -3
-
-# Remove dev cache to reduce artifact size
-rm -rf .next/dev .next/cache
-
-# Create artifact WITH .next build output
+# Create minimal source artifact (no node_modules, no .next)
 BUILD_DIR="/tmp/build_fullstack_dir"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 rsync -a \
   --exclude='node_modules' \
+  --exclude='.next' \
   --exclude='.git' \
   --exclude='skills' \
   --exclude='download' \
@@ -35,6 +28,7 @@ rsync -a \
   --exclude='start-keepalive.sh' \
   --exclude='start-robust.sh' \
   --exclude='watchdog.sh' \
+  --exclude='Caddyfile' \
   ./ "$BUILD_DIR/"
 
 echo "DATABASE_URL=file:./db/custom.db" > "$BUILD_DIR/.env"
