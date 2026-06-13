@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { mkdirSync, existsSync } from 'fs'
-import { join, dirname, resolve } from 'path'
+import { join } from 'path'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -33,6 +33,7 @@ function ensureDatabaseUrl() {
   const dbPath = resolveDatabasePath()
   const dbUrl = `file:${dbPath}`
 
+  // Always set to absolute path for reliability
   if (!process.env.DATABASE_URL || process.env.DATABASE_URL.includes('./')) {
     process.env.DATABASE_URL = dbUrl
     console.log(`[DB] DATABASE_URL set to: ${dbUrl}`)
@@ -42,11 +43,16 @@ function ensureDatabaseUrl() {
 // Ensure the URL is set before creating the client
 ensureDatabaseUrl()
 
-// Create PrismaClient
+// Create PrismaClient with error handling
 function createPrismaClient() {
-  return new PrismaClient({
-    log: ['error'],
-  })
+  try {
+    return new PrismaClient({
+      log: ['error'],
+    })
+  } catch (err) {
+    console.error('[DB] Failed to create PrismaClient:', err)
+    throw err
+  }
 }
 
 export const db = globalForPrisma.prisma ?? createPrismaClient()
@@ -77,14 +83,18 @@ export async function ensureDbInitialized() {
         if (!existsSync(schemaPath)) {
           schemaPath = join(cwd, 'node_modules', '.prisma', 'client', 'schema.prisma')
         }
-        console.log(`[DB] Using schema at: ${schemaPath}`)
-        execSync(`npx prisma db push --accept-data-loss --schema="${schemaPath}"`, {
-          stdio: 'pipe',
-          env: { ...process.env },
-          cwd,
-          timeout: 30000,
-        })
-        console.log('[DB] Database tables created successfully')
+        if (existsSync(schemaPath)) {
+          console.log(`[DB] Using schema at: ${schemaPath}`)
+          execSync(`npx prisma db push --accept-data-loss --schema="${schemaPath}"`, {
+            stdio: 'pipe',
+            env: { ...process.env },
+            cwd,
+            timeout: 30000,
+          })
+          console.log('[DB] Database tables created successfully')
+        } else {
+          console.error('[DB] No schema.prisma found - cannot initialize database')
+        }
       } catch (pushError) {
         console.error('[DB] prisma db push failed:', pushError)
       }

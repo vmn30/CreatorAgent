@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "prisma generate && next build",
-    "start": "node scripts/setup-config.mjs && next start -p 3000",
+    "start": "node scripts/setup-config.mjs && node scripts/init-db.mjs && next start -p 3000",
     "lint": "eslint .",
     "db:push": "prisma db push",
     "db:generate": "prisma generate"
