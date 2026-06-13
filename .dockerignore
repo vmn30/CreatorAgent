@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+db/*.db
+db/*.db-journal
+*.log
+.env.local
+.env*.local
+tool-results
+download
+skills
+agent-ctx
+worklog.md
+hackathon.json
+.zscripts
+mini-services
+examples
