@@ -8,21 +8,14 @@ cd /home/z/my-project
 BUILD_ID="${BUILD_ID:-$(date +%s)}"
 OUTPUT_PATH="/tmp/build_fullstack_${BUILD_ID}.tar.gz"
 
-# Install deps and build (for validation)
-npm install --silent 2>/dev/null
-npx prisma generate 2>/dev/null
-npm run build 2>&1 | tail -3
-
-# Clean up dev cache to reduce artifact size
-rm -rf .next/dev .next/cache
-
-# Create minimal source artifact - include .next build output
+# Create minimal source artifact (NO .next, NO node_modules)
 BUILD_DIR="/tmp/build_fullstack_dir"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 rsync -a \
   --exclude='node_modules' \
+  --exclude='.next' \
   --exclude='.git' \
   --exclude='skills' \
   --exclude='download' \
@@ -40,8 +33,6 @@ rsync -a \
   --exclude='.dockerignore' \
   --exclude='start-keepalive.sh' \
   --exclude='start-robust.sh' \
-  --exclude='.next/dev' \
-  --exclude='.next/cache' \
   ./ "$BUILD_DIR/"
 
 # Ensure correct .env
