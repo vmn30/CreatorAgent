@@ -45,7 +45,7 @@ ensureDatabaseUrl()
 // Create PrismaClient
 function createPrismaClient() {
   return new PrismaClient({
-    log: process.env.NODE_ENV === 'development' ? ['query'] : ['error'],
+    log: ['error'],
   })
 }
 
