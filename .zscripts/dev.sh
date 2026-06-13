@@ -13,7 +13,7 @@ if [ ! -f .z-ai-config ]; then
   [ ! -f .z-ai-config ] && echo '{"baseUrl":"https://internal-api.z.ai/v1","apiKey":"Z.ai"}' > .z-ai-config
 fi
 
-# Install deps for prisma CLI (standalone server doesn't need this)
+# Install deps for prisma CLI
 if [ ! -d node_modules ] || [ ! -f node_modules/.bin/prisma ]; then
   echo "[DEV] Installing dependencies..."
   bun install 2>/dev/null || npm install --silent 2>/dev/null
@@ -25,13 +25,17 @@ npx prisma db push --accept-data-loss 2>/dev/null || true
 
 # Start standalone server (0ms startup!)
 if [ -f server.js ]; then
-  echo "[DEV] Starting standalone server..."
+  echo "[DEV] Starting standalone server (instant startup)..."
+  # Use standalone node_modules if available
+  if [ -d standalone_node_modules ]; then
+    export NODE_PATH="$(pwd)/standalone_node_modules"
+  fi
   PORT=3000 exec node server.js
 elif [ -f .next/standalone/server.js ]; then
   echo "[DEV] Starting standalone server from .next/standalone..."
   cd .next/standalone
   PORT=3000 exec node server.js
 else
-  echo "[DEV] No standalone build found, starting dev server..."
+  echo "[DEV] No standalone build, running next dev..."
   exec npx next dev -p 3000
 fi
