@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { db, ensureDbInitialized } from '@/lib/db'
 import { runFullWorkflow } from '@/lib/agent'
 
 export async function POST(request: Request) {
   try {
+    await ensureDbInitialized()
     const { topic } = await request.json()
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {

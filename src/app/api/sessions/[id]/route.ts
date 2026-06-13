@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { db, ensureDbInitialized } from '@/lib/db'
 
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDbInitialized()
     const { id } = await params
 
     const session = await db.creationSession.findUnique({
