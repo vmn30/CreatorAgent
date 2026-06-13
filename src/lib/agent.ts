@@ -149,15 +149,25 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
         const queries = (planData.researchQueries as string[]) || [session.topic]
         const researchResults: Array<{ query: string; results: unknown }> = []
 
-        console.log(`[Agent] Step research: running ${Math.min(queries.length, 3)} searches`)
+        // Only do 2 searches to reduce memory usage
+        const maxSearches = 2
+        console.log(`[Agent] Step research: running ${Math.min(queries.length, maxSearches)} searches`)
 
-        for (const query of queries.slice(0, 3)) {
+        for (const query of queries.slice(0, maxSearches)) {
           try {
             const searchResult = await zai.functions.invoke('web_search', {
               query,
-              num: 5,
+              num: 3,
             })
-            researchResults.push({ query, results: searchResult })
+            // Trim search results to reduce memory
+            const trimmed = Array.isArray(searchResult)
+              ? searchResult.slice(0, 3).map((r: { snippet?: string; name?: string; url?: string }) => ({
+                  name: r.name,
+                  snippet: (r.snippet || '').substring(0, 200),
+                  url: r.url,
+                }))
+              : searchResult
+            researchResults.push({ query, results: trimmed })
             toolCalls.push({ tool: 'web_search', query, resultCount: Array.isArray(searchResult) ? searchResult.length : 0 })
             console.log(`[Agent] Step research: completed search for "${query}"`)
           } catch (err) {
@@ -167,17 +177,17 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
           }
         }
 
-        // Summarize research
+        // Summarize research with concise prompt
         console.log(`[Agent] Step research: synthesizing findings`)
         const researchSummary = await zai.chat.completions.create({
           messages: [
             {
               role: 'system',
-              content: 'You are a research synthesis agent. Given search results, create a comprehensive research summary with key findings, statistics, and insights that will inform article writing. Be thorough and factual.',
+              content: 'Summarize the search results into key findings for article writing. Be concise (under 500 words). Focus on facts and data points.',
             },
             {
               role: 'user',
-              content: `Topic: ${session.topic}\n\nResearch data: ${JSON.stringify(researchResults, null, 2)}`,
+              content: `Topic: ${session.topic}\n\nResearch data: ${JSON.stringify(researchResults)}`,
             },
           ],
         })
@@ -227,16 +237,21 @@ export async function executeStep(sessionId: string, stepType: StepType): Promis
           ? researchSteps[researchSteps.length - 1].output
           : ''
 
+        // Truncate research output to prevent memory issues
+        const truncatedResearch = typeof researchOutput === 'string'
+          ? researchOutput.substring(0, 3000)
+          : JSON.stringify(researchOutput).substring(0, 3000)
+
         console.log(`[Agent] Step write: writing full article`)
         const completion = await zai.chat.completions.create({
           messages: [
             {
               role: 'system',
-              content: 'You are an expert article writing agent. Write a comprehensive, well-structured, and engaging research article in markdown format. The article should be detailed (800+ words per major section), include data points from research, and be written in an authoritative yet accessible tone. Include a compelling introduction and a forward-looking conclusion. Use markdown formatting with headers (##, ###), bullet points, and emphasis where appropriate.',
+              content: 'Write a well-structured research article in markdown. Keep it focused and concise (1500-2500 words total). Include: introduction, 3-4 main sections with data points, and a conclusion. Use markdown headers (##, ###).',
             },
             {
               role: 'user',
-              content: `Topic: ${session.topic}\n\nOutline: ${typeof outlineData === 'string' ? outlineData : JSON.stringify(outlineData)}\n\nResearch findings: ${researchOutput}\n\nWrite the complete article now.`,
+              content: `Topic: ${session.topic}\n\nOutline: ${typeof outlineData === 'string' ? outlineData.substring(0, 2000) : JSON.stringify(outlineData).substring(0, 2000)}\n\nResearch findings: ${truncatedResearch}\n\nWrite the article now.`,
             },
           ],
         })
