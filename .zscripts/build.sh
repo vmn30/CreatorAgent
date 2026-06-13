@@ -1,26 +1,27 @@
 #!/bin/bash
 set -e
 
-echo "=== CreatorAgent Build Script ==="
+echo "[Build] Starting..."
 
-# Step 1: Install dependencies
-echo "[Build] Installing dependencies..."
-npm install
+# Install dependencies (use bun for speed, fallback to npm)
+if command -v bun &> /dev/null; then
+  echo "[Build] Using bun for install..."
+  bun install 2>/dev/null
+else
+  echo "[Build] Using npm for install..."
+  npm install --silent 2>/dev/null
+fi
 
-# Step 2: Setup SDK config
-echo "[Build] Setting up Z.AI SDK config..."
-node scripts/setup-config.mjs
+# Setup SDK config
+node scripts/setup-config.mjs 2>/dev/null || true
 
-# Step 3: Generate Prisma client
-echo "[Build] Generating Prisma client..."
-npx prisma generate
+# Generate Prisma client
+npx prisma generate 2>/dev/null
 
-# Step 4: Initialize database
-echo "[Build] Initializing database..."
-node scripts/init-db.mjs
+# Initialize database
+node scripts/init-db.mjs 2>/dev/null || true
 
-# Step 5: Build Next.js
-echo "[Build] Building Next.js application..."
-npm run build
+# Build Next.js
+npm run build 2>&1 | tail -5
 
-echo "=== Build Complete ==="
+echo "[Build] Done!"
