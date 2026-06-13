@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   typescript: {
     ignoreBuildErrors: true,
   },
@@ -9,7 +10,6 @@ const nextConfig: NextConfig = {
     ".space-z.ai",
     "localhost",
   ],
-  // Use turbopack for faster dev server startup
 };
 
 export default nextConfig;

@@ -6,31 +6,23 @@ cd /home/z/my-project
 BUILD_ID="${BUILD_ID:-$(date +%s)}"
 OUTPUT_PATH="/tmp/build_fullstack_${BUILD_ID}.tar.gz"
 
-# Create minimal source artifact (no node_modules, no .next)
+# Build the project (creates standalone output)
+npm install --silent 2>/dev/null || true
+npx prisma generate 2>/dev/null || true
+npm run build 2>&1 | tail -5
+
+# Create artifact WITH standalone output
 BUILD_DIR="/tmp/build_fullstack_dir"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-rsync -a \
-  --exclude='node_modules' \
-  --exclude='.next' \
-  --exclude='.git' \
-  --exclude='skills' \
-  --exclude='download' \
-  --exclude='tool-results' \
-  --exclude='agent-ctx' \
-  --exclude='mini-services' \
-  --exclude='examples' \
-  --exclude='.z-ai-config' \
-  --exclude='db/custom.db' \
-  --exclude='db/custom.db-journal' \
-  --exclude='*.log' \
-  --exclude='start-keepalive.sh' \
-  --exclude='start-robust.sh' \
-  --exclude='watchdog.sh' \
-  --exclude='Caddyfile' \
-  ./ "$BUILD_DIR/"
+# Copy standalone server (self-contained, includes node_modules)
+rsync -a .next/standalone/ "$BUILD_DIR/"
 
+# Copy static files that standalone needs
+cp -r .next/static "$BUILD_DIR/.next/static/"
+
+# Ensure .env
 echo "DATABASE_URL=file:./db/custom.db" > "$BUILD_DIR/.env"
 
 cd /tmp
