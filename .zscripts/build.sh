@@ -8,13 +8,13 @@ cd /home/z/my-project
 # The deploy API passes BUILD_ID env variable
 BUILD_ID="${BUILD_ID:-$(date +%s)}"
 OUTPUT_PATH="/tmp/build_fullstack_${BUILD_ID}.tar.gz"
-echo "[Build] BUILD_ID=$BUILD_ID, Output: $OUTPUT_PATH"
+echo "[Build] BUILD_ID=$BUILD_ID"
 
-# Step 1: Install all dependencies
+# Install all dependencies (need dev deps for build)
 echo "[Build] Installing dependencies..."
 npm install --silent 2>/dev/null
 
-# Step 2: Ensure .z-ai-config exists (copy from /etc/ if needed)
+# Ensure .z-ai-config exists
 if [ ! -f .z-ai-config ]; then
   if [ -f /etc/.z-ai-config ]; then
     cp /etc/.z-ai-config .z-ai-config
@@ -23,31 +23,42 @@ if [ ! -f .z-ai-config ]; then
   fi
 fi
 
-# Step 3: Generate Prisma client
-echo "[Build] Generating Prisma client..."
+# Generate Prisma client
 npx prisma generate 2>/dev/null
 
-# Step 4: Initialize database
-echo "[Build] Initializing database..."
+# Initialize database
 node scripts/init-db.mjs 2>/dev/null || true
 
-# Step 5: Build Next.js
-echo "[Build] Building Next.js..."
+# Build Next.js
 npm run build 2>&1 | tail -5
 
-# Step 6: Create deployment artifact
-echo "[Build] Creating deployment artifact..."
+# Create minimal deployment artifact - just source code, no node_modules
+# The start.sh will install deps in the deployment container
+echo "[Build] Creating minimal artifact..."
 BUILD_DIR="/tmp/build_fullstack_dir"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/.zscripts"
 mkdir -p "$BUILD_DIR/db"
+mkdir -p "$BUILD_DIR/public"
+mkdir -p "$BUILD_DIR/prisma"
+mkdir -p "$BUILD_DIR/scripts"
+mkdir -p "$BUILD_DIR/src/app/api/agent/execute"
+mkdir -p "$BUILD_DIR/src/app/api/agent/run-full"
+mkdir -p "$BUILD_DIR/src/app/api/agent/start"
+mkdir -p "$BUILD_DIR/src/app/api/generate-image"
+mkdir -p "$BUILD_DIR/src/app/api/sessions"
+mkdir -p "$BUILD_DIR/src/components/ui"
+mkdir -p "$BUILD_DIR/src/lib"
+mkdir -p "$BUILD_DIR/src/hooks"
 
-# Copy built application
+# Copy built application (essential files only)
 cp -r .next "$BUILD_DIR/"
-cp -r public "$BUILD_DIR/"
-cp -r prisma "$BUILD_DIR/"
-cp -r scripts "$BUILD_DIR/"
+cp -r public/* "$BUILD_DIR/public/"
+cp -r prisma/schema.prisma "$BUILD_DIR/prisma/"
+cp scripts/setup-config.mjs "$BUILD_DIR/scripts/"
+cp scripts/init-db.mjs "$BUILD_DIR/scripts/"
 cp package.json "$BUILD_DIR/"
+cp package-lock.json "$BUILD_DIR/"
 cp next.config.ts "$BUILD_DIR/"
 cp .env "$BUILD_DIR/"
 cp .z-ai-config "$BUILD_DIR/"
@@ -58,14 +69,17 @@ cp db/custom.db "$BUILD_DIR/db/" 2>/dev/null || true
 # Copy start script
 cp .zscripts/start.sh "$BUILD_DIR/.zscripts/start.sh"
 
-# Install ONLY production dependencies
-cd "$BUILD_DIR"
-npm install --omit=dev --silent 2>/dev/null
+# Copy source files (needed for dev mode fallback)
+cp -r src/app "$BUILD_DIR/src/"
+cp -r src/components "$BUILD_DIR/src/"
+cp -r src/lib "$BUILD_DIR/src/"
+cp -r src/hooks "$BUILD_DIR/src/"
+cp tsconfig.json "$BUILD_DIR/" 2>/dev/null || true
+cp postcss.config.mjs "$BUILD_DIR/" 2>/dev/null || true
+cp components.json "$BUILD_DIR/" 2>/dev/null || true
+cp globals.css "$BUILD_DIR/src/app/" 2>/dev/null || true
 
-# Generate Prisma client
-npx prisma generate 2>/dev/null
-
-# Create artifact
+# Create artifact WITHOUT node_modules (start.sh will install)
 cd /tmp
 tar -czf "$OUTPUT_PATH" -C "$BUILD_DIR" .
 
